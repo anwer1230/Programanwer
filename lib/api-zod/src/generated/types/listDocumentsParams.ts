@@ -6,6 +6,11 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface HealthStatus {
-  status: string;
-}
+export type ListDocumentsParams = {
+/**
+ * @nullable
+ */
+folderId?: number | null;
+search?: string;
+starred?: boolean;
+};
