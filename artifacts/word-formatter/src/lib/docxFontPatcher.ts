@@ -49,7 +49,10 @@ export async function patchDocxFonts(
     zip.file(filePath, content);
   }
 
-  const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+  const uint8 = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
+  const blob = new Blob([uint8], {
+    type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  });
   saveAs(blob, `${outputFileName}.docx`);
 }
 
