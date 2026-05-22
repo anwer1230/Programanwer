@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, Component, type ReactNode } from "react";
 import { parseText, ParsedBlock } from "./lib/tableDetector";
 import { generateDocx } from "./lib/docGenerator";
+import { patchDocxFonts } from "./lib/docxFontPatcher";
 import { BORDER_PRESETS, BorderPreset } from "./lib/borderPresets";
 import { parseDocxToBlocks } from "./lib/docxParser";
 import { parsePdfToText } from "./lib/pdfParser";
@@ -602,8 +603,13 @@ function DocumentFormatterSection() {
   const [uploadedFileName, setUploadedFileName] = useState("");
   const [uploadError, setUploadError] = useState("");
   const [uploadedFileKind, setUploadedFileKind] = useState<FileKind>(null);
+  const [uploadedArrayBuffer, setUploadedArrayBuffer] = useState<ArrayBuffer | null>(null);
   const [hadEncodingIssues, setHadEncodingIssues] = useState(false);
   const [structuredBlocks, setStructuredBlocks] = useState<ParsedBlock[] | null>(null);
+
+  const [arabicFont, setArabicFont] = useState("Simplified Arabic");
+  const [englishFont, setEnglishFont] = useState("Times New Roman");
+  const [overrideFontSize, setOverrideFontSize] = useState<number | null>(null);
 
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied">("idle");
 
@@ -642,13 +648,22 @@ function DocumentFormatterSection() {
     setStatus("processing");
     setErrorMsg("");
     try {
-      const parsed = structuredBlocks ?? (blocks.length > 0 ? blocks : parseText(text));
-      await generateDocx(
-        parsed,
-        fileName,
-        prelim,
-        selectedBorder.id === "none" ? null : selectedBorder
-      );
+      if (uploadedFileKind === "docx" && uploadedArrayBuffer) {
+        await patchDocxFonts(uploadedArrayBuffer, fileName, {
+          arabicFont,
+          englishFont,
+          fontSize: overrideFontSize,
+          borderPreset: selectedBorder.id === "none" ? null : selectedBorder,
+        });
+      } else {
+        const parsed = structuredBlocks ?? (blocks.length > 0 ? blocks : parseText(text));
+        await generateDocx(
+          parsed,
+          fileName,
+          prelim,
+          selectedBorder.id === "none" ? null : selectedBorder
+        );
+      }
       setStatus("done");
       setTimeout(() => setStatus("idle"), 4000);
     } catch (e: unknown) {
@@ -667,6 +682,7 @@ function DocumentFormatterSection() {
     setUploadedFileName("");
     setUploadError("");
     setUploadedFileKind(null);
+    setUploadedArrayBuffer(null);
     textareaRef.current?.focus();
   };
 
@@ -696,6 +712,7 @@ function DocumentFormatterSection() {
       const arrayBuffer = await file.arrayBuffer();
 
       if (isDocx) {
+        setUploadedArrayBuffer(arrayBuffer);
         const { blocks: parsedBlocks, rawText, hadEncodingIssues: enc } = await parseDocxToBlocks(arrayBuffer);
         setText(rawText);
         setStructuredBlocks(parsedBlocks);
@@ -752,8 +769,61 @@ function DocumentFormatterSection() {
               className="w-full border border-input rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring bg-background" />
           </div>
         </div>
-        <div className="mt-3 grid grid-cols-3 gap-3 text-xs text-muted-foreground bg-muted/40 rounded-lg p-3">
-          <span>📌 الخط: Simplified Arabic / Times New Roman</span>
+        {/* Font settings */}
+        <div className="mt-4 border-t border-border pt-4">
+          <p className="text-xs font-semibold text-foreground mb-3 flex items-center gap-1">
+            <span>🔤</span> إعدادات الخط
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs text-muted-foreground mb-1">خط النص العربي</label>
+              <select value={arabicFont} onChange={(e) => setArabicFont(e.target.value)}
+                className="w-full border border-input rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring bg-background">
+                <option value="Simplified Arabic">Simplified Arabic</option>
+                <option value="Traditional Arabic">Traditional Arabic</option>
+                <option value="Arabic Typesetting">Arabic Typesetting</option>
+                <option value="Sakkal Majalla">Sakkal Majalla</option>
+                <option value="Times New Roman">Times New Roman</option>
+                <option value="Arial">Arial</option>
+                <option value="Calibri">Calibri</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-muted-foreground mb-1">خط النص الإنجليزي</label>
+              <select value={englishFont} onChange={(e) => setEnglishFont(e.target.value)}
+                className="w-full border border-input rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring bg-background">
+                <option value="Times New Roman">Times New Roman</option>
+                <option value="Calibri">Calibri</option>
+                <option value="Arial">Arial</option>
+                <option value="Georgia">Georgia</option>
+                <option value="Cambria">Cambria</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-muted-foreground mb-1">حجم الخط (نقطة)</label>
+              <select
+                value={overrideFontSize ?? ""}
+                onChange={(e) => setOverrideFontSize(e.target.value ? Number(e.target.value) : null)}
+                className="w-full border border-input rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring bg-background">
+                <option value="">بدون تغيير (كما في الأصل)</option>
+                <option value="10">10 pt</option>
+                <option value="11">11 pt</option>
+                <option value="12">12 pt</option>
+                <option value="13">13 pt</option>
+                <option value="14">14 pt</option>
+                <option value="16">16 pt</option>
+                <option value="18">18 pt</option>
+              </select>
+            </div>
+          </div>
+          {uploadedFileKind === "docx" && (
+            <p className="mt-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 flex items-center gap-2">
+              <span>✅</span>
+              وضع الحفاظ على التنسيق — سيتم تغيير الخط فقط ويبقى كل شيء آخر (الجداول، الصور، الترتيب، الألوان) كما في الأصل
+            </p>
+          )}
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-muted-foreground bg-muted/40 rounded-lg p-3">
           <span>📏 الهوامش: 1.25 | 1.0 بوصة</span>
           <span>📐 تباعد الأسطر: 1.5</span>
         </div>
