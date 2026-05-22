@@ -388,6 +388,93 @@ function HtmlExporterSection() {
 }
 
 // ─── Live Page Preview ─────────────────────────────────────────────────────────
+function PageContent({
+  blocks,
+  fileName,
+  prelim,
+}: {
+  blocks: ParsedBlock[];
+  fileName: string;
+  prelim: number;
+}) {
+  const hasContent = blocks.length > 0;
+  if (!hasContent) {
+    return (
+      <div style={{ color: "#aaa", fontSize: 15, textAlign: "center", marginTop: 80, lineHeight: 2.2 }}>
+        <div style={{ fontSize: 38, marginBottom: 12 }}>📝</div>
+        أدخل نصاً أو ارفع ملفاً
+        <br />
+        <span style={{ fontSize: 12 }}>لتظهر المعاينة هنا فورياً</span>
+      </div>
+    );
+  }
+  return (
+    <div>
+      {prelim > 0 && (
+        <div style={{ textAlign: "center", color: "#94a3b8", fontSize: 10, marginBottom: 16, borderBottom: "1px dashed #e2e8f0", paddingBottom: 8 }}>
+          {prelim} صفحة تمهيدية (i، ii، …)
+        </div>
+      )}
+      {fileName && (
+        <div style={{ textAlign: "center", fontWeight: "bold", fontSize: 17, marginBottom: 20, color: "#1e293b" }}>
+          {fileName}
+        </div>
+      )}
+      {blocks.map((block, i) => {
+        if (block.type === "empty") return <div key={i} style={{ height: 8 }} />;
+
+        if (block.type === "image" && block.imageData)
+          return (
+            <div key={i} style={{ margin: "10px 0", textAlign: "center" }}>
+              <img src={block.imageData} alt={block.imageAlt || "صورة"} style={{ maxWidth: "100%", maxHeight: 160, objectFit: "contain" }} />
+            </div>
+          );
+
+        if (block.type === "table" && block.table)
+          return (
+            <div key={i} style={{ margin: "10px 0" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                <thead>
+                  <tr>
+                    {block.table.headers.map((h, hi) => (
+                      <th key={hi} style={{ border: "1px solid #94a3b8", padding: "4px 6px", background: "#e2e8f0", fontWeight: "bold", textAlign: "right" }}>
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {block.table.rows.map((row, ri) => (
+                    <tr key={ri} style={{ background: ri % 2 === 0 ? "#fff" : "#f8fafc" }}>
+                      {row.map((cell, ci) => (
+                        <td key={ci} style={{ border: "1px solid #cbd5e1", padding: "3px 6px", textAlign: "right", fontSize: 10 }}>
+                          {cell}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+
+        if (block.type === "heading1")
+          return <div key={i} style={{ fontWeight: "bold", fontSize: 15, color: "#0f172a", margin: "14px 0 6px" }}>{block.text}</div>;
+
+        if (block.type === "heading2")
+          return <div key={i} style={{ fontWeight: "bold", fontSize: 12, color: "#1e293b", margin: "10px 0 4px" }}>{block.text}</div>;
+
+        return (
+          <div key={i} style={{ fontSize: 11, color: "#334155", margin: "3px 0", lineHeight: 1.7 }}>
+            {block.text}
+          </div>
+        );
+      })}
+      <div style={{ marginTop: 32, textAlign: "center", color: "#94a3b8", fontSize: 10 }}>— 1 —</div>
+    </div>
+  );
+}
+
 function DocumentPagePreview({
   blocks,
   selectedBorder,
@@ -399,44 +486,26 @@ function DocumentPagePreview({
   fileName: string;
   prelim: number;
 }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [scale, setScale] = useState(0.42);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(0.4);
 
   const A4_W = 794;
   const A4_H = 1123;
 
   useEffect(() => {
     const update = () => {
-      if (containerRef.current) {
-        const w = containerRef.current.offsetWidth;
-        setScale(Math.min((w - 16) / A4_W, 0.5));
+      if (wrapperRef.current) {
+        const w = wrapperRef.current.offsetWidth;
+        setScale(Math.min((w - 8) / A4_W, 0.48));
       }
     };
     update();
     const ro = new ResizeObserver(update);
-    if (containerRef.current) ro.observe(containerRef.current);
+    if (wrapperRef.current) ro.observe(wrapperRef.current);
     return () => ro.disconnect();
   }, []);
 
-  const borderStyle =
-    selectedBorder.id === "none" ? "none" : selectedBorder.cssPreview;
-
-  const pageStyle: React.CSSProperties = {
-    width: A4_W,
-    minHeight: A4_H,
-    background: "#fff",
-    border: borderStyle,
-    boxSizing: "border-box",
-    padding: "96px 90px 80px 72px",
-    fontFamily: '"Simplified Arabic", "Times New Roman", serif',
-    direction: "rtl",
-    lineHeight: 1.6,
-    transformOrigin: "top center",
-    transform: `scale(${scale})`,
-    boxShadow: "0 2px 18px 0 rgba(0,0,0,0.13)",
-  };
-
-  const hasContent = blocks.length > 0;
+  const scaledH = Math.round(A4_H * scale);
 
   return (
     <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden">
@@ -453,194 +522,27 @@ function DocumentPagePreview({
         )}
       </div>
 
-      <div
-        ref={containerRef}
-        className="bg-slate-100 flex justify-center overflow-hidden"
-        style={{ minHeight: Math.round(A4_H * scale) + 24, padding: "12px 4px" }}
-      >
+      <div ref={wrapperRef} className="bg-slate-100" style={{ height: scaledH + 16, overflow: "hidden", position: "relative" }}>
         <div
           style={{
+            position: "absolute",
+            top: 8,
+            left: "50%",
+            transformOrigin: "top center",
+            transform: `translateX(-50%) scale(${scale})`,
             width: A4_W,
             minHeight: A4_H,
-            transformOrigin: "top center",
-            transform: `scale(${scale})`,
-            transformBox: "content-box",
-            marginBottom: -(A4_H * (1 - scale)),
+            background: "#fff",
+            border: selectedBorder.id === "none" ? "none" : selectedBorder.cssPreview,
+            boxSizing: "border-box",
+            padding: "72px 80px 60px 64px",
+            fontFamily: '"Simplified Arabic", "Times New Roman", serif',
+            direction: "rtl",
+            lineHeight: 1.6,
+            boxShadow: "0 2px 18px rgba(0,0,0,0.13)",
           }}
         >
-          <div style={pageStyle}>
-            {!hasContent ? (
-              <div
-                style={{
-                  color: "#aaa",
-                  fontSize: 15,
-                  textAlign: "center",
-                  marginTop: 80,
-                  lineHeight: 2.2,
-                }}
-              >
-                <div style={{ fontSize: 38, marginBottom: 12 }}>📝</div>
-                أدخل نصاً أو ارفع ملفاً
-                <br />
-                <span style={{ fontSize: 12 }}>
-                  لتظهر المعاينة هنا فورياً
-                </span>
-              </div>
-            ) : (
-              <>
-                {prelim > 0 && (
-                  <div
-                    style={{
-                      textAlign: "center",
-                      color: "#94a3b8",
-                      fontSize: 10,
-                      marginBottom: 16,
-                      borderBottom: "1px dashed #e2e8f0",
-                      paddingBottom: 8,
-                    }}
-                  >
-                    {prelim} صفحة تمهيدية (i، ii، …)
-                  </div>
-                )}
-                {fileName && (
-                  <div
-                    style={{
-                      textAlign: "center",
-                      fontWeight: "bold",
-                      fontSize: 17,
-                      marginBottom: 20,
-                      color: "#1e293b",
-                    }}
-                  >
-                    {fileName}
-                  </div>
-                )}
-                {blocks.map((block, i) => {
-                  if (block.type === "empty")
-                    return <div key={i} style={{ height: 8 }} />;
-
-                  if (block.type === "image" && block.imageData)
-                    return (
-                      <div key={i} style={{ margin: "10px 0", textAlign: "center" }}>
-                        <img
-                          src={block.imageData}
-                          alt={block.imageAlt || "صورة"}
-                          style={{ maxWidth: "100%", maxHeight: 160, objectFit: "contain" }}
-                        />
-                      </div>
-                    );
-
-                  if (block.type === "table" && block.table)
-                    return (
-                      <div key={i} style={{ margin: "10px 0", overflowX: "auto" }}>
-                        <table
-                          style={{
-                            width: "100%",
-                            borderCollapse: "collapse",
-                            fontSize: 11,
-                          }}
-                        >
-                          <thead>
-                            <tr>
-                              {block.table.headers.map((h, hi) => (
-                                <th
-                                  key={hi}
-                                  style={{
-                                    border: "1px solid #94a3b8",
-                                    padding: "4px 6px",
-                                    background: "#e2e8f0",
-                                    fontWeight: "bold",
-                                    textAlign: "right",
-                                  }}
-                                >
-                                  {h}
-                                </th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {block.table.rows.map((row, ri) => (
-                              <tr key={ri} style={{ background: ri % 2 === 0 ? "#fff" : "#f8fafc" }}>
-                                {row.map((cell, ci) => (
-                                  <td
-                                    key={ci}
-                                    style={{
-                                      border: "1px solid #cbd5e1",
-                                      padding: "3px 6px",
-                                      textAlign: "right",
-                                      fontSize: 10,
-                                    }}
-                                  >
-                                    {cell}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    );
-
-                  if (block.type === "heading1")
-                    return (
-                      <div
-                        key={i}
-                        style={{
-                          fontWeight: "bold",
-                          fontSize: 15,
-                          color: "#0f172a",
-                          margin: "14px 0 6px",
-                        }}
-                      >
-                        {block.text}
-                      </div>
-                    );
-
-                  if (block.type === "heading2")
-                    return (
-                      <div
-                        key={i}
-                        style={{
-                          fontWeight: "bold",
-                          fontSize: 12,
-                          color: "#1e293b",
-                          margin: "10px 0 4px",
-                        }}
-                      >
-                        {block.text}
-                      </div>
-                    );
-
-                  return (
-                    <div
-                      key={i}
-                      style={{
-                        fontSize: 11,
-                        color: "#334155",
-                        margin: "3px 0",
-                        lineHeight: 1.7,
-                      }}
-                    >
-                      {block.text}
-                    </div>
-                  );
-                })}
-                <div
-                  style={{
-                    position: "absolute",
-                    bottom: 28,
-                    width: "100%",
-                    textAlign: "center",
-                    color: "#94a3b8",
-                    fontSize: 10,
-                    left: 0,
-                  }}
-                >
-                  — 1 —
-                </div>
-              </>
-            )}
-          </div>
+          <PageContent blocks={blocks} fileName={fileName} prelim={prelim} />
         </div>
       </div>
 
