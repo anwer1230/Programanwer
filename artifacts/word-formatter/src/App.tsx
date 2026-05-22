@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, Component, type ReactNode } from "react";
 import { parseText, ParsedBlock } from "./lib/tableDetector";
 import { generateDocx } from "./lib/docGenerator";
-import { patchDocxFonts } from "./lib/docxFontPatcher";
+import { patchDocxFonts, type DocxMargins } from "./lib/docxFontPatcher";
 import { BORDER_PRESETS, BorderPreset } from "./lib/borderPresets";
 import { parseDocxToBlocks } from "./lib/docxParser";
 import { parsePdfToText } from "./lib/pdfParser";
@@ -610,6 +610,8 @@ function DocumentFormatterSection() {
   const [arabicFont, setArabicFont] = useState("Simplified Arabic");
   const [englishFont, setEnglishFont] = useState("Times New Roman");
   const [overrideFontSize, setOverrideFontSize] = useState<number | null>(null);
+  const [keepMargins, setKeepMargins] = useState(true);
+  const [margins, setMargins] = useState<DocxMargins>({ top: 2.54, bottom: 2.54, left: 3.17, right: 3.17 });
 
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied">("idle");
 
@@ -653,6 +655,7 @@ function DocumentFormatterSection() {
           arabicFont,
           englishFont,
           fontSize: overrideFontSize,
+          margins: keepMargins ? null : margins,
           borderPreset: selectedBorder.id === "none" ? null : selectedBorder,
         });
       } else {
@@ -823,9 +826,46 @@ function DocumentFormatterSection() {
             </p>
           )}
         </div>
-        <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-muted-foreground bg-muted/40 rounded-lg p-3">
-          <span>📏 الهوامش: 1.25 | 1.0 بوصة</span>
-          <span>📐 تباعد الأسطر: 1.5</span>
+        {/* Margin settings */}
+        <div className="mt-4 border-t border-border pt-4">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs font-semibold text-foreground flex items-center gap-1">
+              <span>📏</span> الهوامش (سم)
+            </p>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
+              <input type="checkbox" checked={keepMargins}
+                onChange={(e) => setKeepMargins(e.target.checked)}
+                className="rounded" />
+              إبقاء هوامش الملف الأصلي
+            </label>
+          </div>
+          {!keepMargins && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {(["top","bottom","left","right"] as const).map((side) => {
+                const labels: Record<string, string> = { top: "أعلى", bottom: "أسفل", left: "يسار", right: "يمين" };
+                return (
+                  <div key={side}>
+                    <label className="block text-xs text-muted-foreground mb-1">{labels[side]}</label>
+                    <div className="flex items-center gap-1">
+                      <input type="number" min={1} max={6} step={0.1}
+                        value={margins[side]}
+                        onChange={(e) => setMargins((m) => ({ ...m, [side]: Number(e.target.value) }))}
+                        className="w-full border border-input rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring bg-background" />
+                      <span className="text-xs text-muted-foreground">سم</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {keepMargins && (
+            <p className="text-xs text-muted-foreground bg-muted/40 rounded-lg px-3 py-2">
+              سيتم الإبقاء على هوامش الملف الأصلي كما هي
+            </p>
+          )}
+        </div>
+        <div className="mt-3 text-xs text-muted-foreground bg-muted/40 rounded-lg px-3 py-2">
+          📐 تباعد الأسطر: يُحافظ على التباعد الأصلي في الملف
         </div>
       </div>
 
