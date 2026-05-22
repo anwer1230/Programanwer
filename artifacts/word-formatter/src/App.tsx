@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { parseText, ParsedBlock } from "./lib/tableDetector";
 import { generateDocx } from "./lib/docGenerator";
 import { BORDER_PRESETS, BorderPreset } from "./lib/borderPresets";
@@ -387,6 +387,270 @@ function HtmlExporterSection() {
   );
 }
 
+// ─── Live Page Preview ─────────────────────────────────────────────────────────
+function DocumentPagePreview({
+  blocks,
+  selectedBorder,
+  fileName,
+  prelim,
+}: {
+  blocks: ParsedBlock[];
+  selectedBorder: BorderPreset;
+  fileName: string;
+  prelim: number;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(0.42);
+
+  const A4_W = 794;
+  const A4_H = 1123;
+
+  useEffect(() => {
+    const update = () => {
+      if (containerRef.current) {
+        const w = containerRef.current.offsetWidth;
+        setScale(Math.min((w - 16) / A4_W, 0.5));
+      }
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    if (containerRef.current) ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  const borderStyle =
+    selectedBorder.id === "none" ? "none" : selectedBorder.cssPreview;
+
+  const pageStyle: React.CSSProperties = {
+    width: A4_W,
+    minHeight: A4_H,
+    background: "#fff",
+    border: borderStyle,
+    boxSizing: "border-box",
+    padding: "96px 90px 80px 72px",
+    fontFamily: '"Simplified Arabic", "Times New Roman", serif',
+    direction: "rtl",
+    lineHeight: 1.6,
+    transformOrigin: "top center",
+    transform: `scale(${scale})`,
+    boxShadow: "0 2px 18px 0 rgba(0,0,0,0.13)",
+  };
+
+  const hasContent = blocks.length > 0;
+
+  return (
+    <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden">
+      <div className="px-3 py-2.5 border-b border-border flex items-center justify-between bg-slate-50">
+        <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+          <span className="text-base">📄</span>
+          معاينة حية للمستند
+        </span>
+        {selectedBorder.id !== "none" && (
+          <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+            <span>{selectedBorder.emoji}</span>
+            {selectedBorder.label}
+          </span>
+        )}
+      </div>
+
+      <div
+        ref={containerRef}
+        className="bg-slate-100 flex justify-center overflow-hidden"
+        style={{ minHeight: Math.round(A4_H * scale) + 24, padding: "12px 4px" }}
+      >
+        <div
+          style={{
+            width: A4_W,
+            minHeight: A4_H,
+            transformOrigin: "top center",
+            transform: `scale(${scale})`,
+            transformBox: "content-box",
+            marginBottom: -(A4_H * (1 - scale)),
+          }}
+        >
+          <div style={pageStyle}>
+            {!hasContent ? (
+              <div
+                style={{
+                  color: "#aaa",
+                  fontSize: 15,
+                  textAlign: "center",
+                  marginTop: 80,
+                  lineHeight: 2.2,
+                }}
+              >
+                <div style={{ fontSize: 38, marginBottom: 12 }}>📝</div>
+                أدخل نصاً أو ارفع ملفاً
+                <br />
+                <span style={{ fontSize: 12 }}>
+                  لتظهر المعاينة هنا فورياً
+                </span>
+              </div>
+            ) : (
+              <>
+                {prelim > 0 && (
+                  <div
+                    style={{
+                      textAlign: "center",
+                      color: "#94a3b8",
+                      fontSize: 10,
+                      marginBottom: 16,
+                      borderBottom: "1px dashed #e2e8f0",
+                      paddingBottom: 8,
+                    }}
+                  >
+                    {prelim} صفحة تمهيدية (i، ii، …)
+                  </div>
+                )}
+                {fileName && (
+                  <div
+                    style={{
+                      textAlign: "center",
+                      fontWeight: "bold",
+                      fontSize: 17,
+                      marginBottom: 20,
+                      color: "#1e293b",
+                    }}
+                  >
+                    {fileName}
+                  </div>
+                )}
+                {blocks.map((block, i) => {
+                  if (block.type === "empty")
+                    return <div key={i} style={{ height: 8 }} />;
+
+                  if (block.type === "image" && block.imageData)
+                    return (
+                      <div key={i} style={{ margin: "10px 0", textAlign: "center" }}>
+                        <img
+                          src={block.imageData}
+                          alt={block.imageAlt || "صورة"}
+                          style={{ maxWidth: "100%", maxHeight: 160, objectFit: "contain" }}
+                        />
+                      </div>
+                    );
+
+                  if (block.type === "table" && block.table)
+                    return (
+                      <div key={i} style={{ margin: "10px 0", overflowX: "auto" }}>
+                        <table
+                          style={{
+                            width: "100%",
+                            borderCollapse: "collapse",
+                            fontSize: 11,
+                          }}
+                        >
+                          <thead>
+                            <tr>
+                              {block.table.headers.map((h, hi) => (
+                                <th
+                                  key={hi}
+                                  style={{
+                                    border: "1px solid #94a3b8",
+                                    padding: "4px 6px",
+                                    background: "#e2e8f0",
+                                    fontWeight: "bold",
+                                    textAlign: "right",
+                                  }}
+                                >
+                                  {h}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {block.table.rows.map((row, ri) => (
+                              <tr key={ri} style={{ background: ri % 2 === 0 ? "#fff" : "#f8fafc" }}>
+                                {row.map((cell, ci) => (
+                                  <td
+                                    key={ci}
+                                    style={{
+                                      border: "1px solid #cbd5e1",
+                                      padding: "3px 6px",
+                                      textAlign: "right",
+                                      fontSize: 10,
+                                    }}
+                                  >
+                                    {cell}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+
+                  if (block.type === "heading1")
+                    return (
+                      <div
+                        key={i}
+                        style={{
+                          fontWeight: "bold",
+                          fontSize: 15,
+                          color: "#0f172a",
+                          margin: "14px 0 6px",
+                        }}
+                      >
+                        {block.text}
+                      </div>
+                    );
+
+                  if (block.type === "heading2")
+                    return (
+                      <div
+                        key={i}
+                        style={{
+                          fontWeight: "bold",
+                          fontSize: 12,
+                          color: "#1e293b",
+                          margin: "10px 0 4px",
+                        }}
+                      >
+                        {block.text}
+                      </div>
+                    );
+
+                  return (
+                    <div
+                      key={i}
+                      style={{
+                        fontSize: 11,
+                        color: "#334155",
+                        margin: "3px 0",
+                        lineHeight: 1.7,
+                      }}
+                    >
+                      {block.text}
+                    </div>
+                  );
+                })}
+                <div
+                  style={{
+                    position: "absolute",
+                    bottom: 28,
+                    width: "100%",
+                    textAlign: "center",
+                    color: "#94a3b8",
+                    fontSize: 10,
+                    left: 0,
+                  }}
+                >
+                  — 1 —
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="px-3 py-2 text-[10px] text-muted-foreground text-center bg-slate-50 border-t border-border">
+        المعاينة تقريبية — الشكل النهائي في ملف وورد قد يختلف طفيفاً
+      </div>
+    </div>
+  );
+}
+
 // ─── Document Formatter Tab ────────────────────────────────────────────────────
 function DocumentFormatterSection() {
   const [text, setText] = useState("");
@@ -510,7 +774,10 @@ function DocumentFormatterSection() {
   const tableCount = (structuredBlocks ?? blocks).filter((b) => b.type === "table").length;
   const imageCount = (structuredBlocks ?? blocks).filter((b) => b.type === "image").length;
 
+  const previewBlocks = structuredBlocks ?? blocks;
+
   return (
+    <div className="flex flex-col lg:grid lg:grid-cols-[1fr_320px] lg:items-start gap-5">
     <div className="space-y-5">
       {/* Settings */}
       <div className="bg-white rounded-xl border border-border p-4 shadow-sm">
@@ -728,21 +995,6 @@ function DocumentFormatterSection() {
         </div>
       )}
 
-      {/* Preview */}
-      {showPreview && (
-        <div className="bg-white rounded-xl border border-border shadow-sm">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-            <h2 className="text-sm font-semibold text-foreground">معاينة هيكل المستند</h2>
-            <StatsBar blocks={blocks} />
-          </div>
-          <div className="p-4 max-h-96 overflow-y-auto space-y-1">
-            {blocks.map((block, i) => (
-              <BlockPreview key={i} block={block} index={i} />
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* Guide */}
       <div className="bg-white rounded-xl border border-border shadow-sm p-4">
         <h2 className="text-sm font-semibold text-foreground mb-3">دليل الاستخدام</h2>
@@ -761,6 +1013,31 @@ function DocumentFormatterSection() {
           </div>
         </div>
       </div>
+    </div>
+
+    {/* Right column — sticky live preview */}
+    <div className="lg:sticky lg:top-5 space-y-3">
+      <DocumentPagePreview
+        blocks={previewBlocks}
+        selectedBorder={selectedBorder}
+        fileName={fileName}
+        prelim={prelim}
+      />
+      {showPreview && (
+        <div className="bg-white rounded-xl border border-border shadow-sm">
+          <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
+            <h2 className="text-xs font-semibold text-foreground">هيكل المستند</h2>
+            <StatsBar blocks={blocks} />
+          </div>
+          <div className="p-3 max-h-60 overflow-y-auto space-y-1">
+            {blocks.map((block, i) => (
+              <BlockPreview key={i} block={block} index={i} />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+
     </div>
   );
 }
