@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, Component, type ReactNode } from "react";
 import { parseText, ParsedBlock } from "./lib/tableDetector";
 import { generateDocx } from "./lib/docGenerator";
 import { BORDER_PRESETS, BorderPreset } from "./lib/borderPresets";
@@ -16,8 +16,44 @@ import {
   Heading,
   Upload,
   Code,
+  Copy,
   Image as ImageIcon,
 } from "lucide-react";
+
+// ─── Error Boundary ────────────────────────────────────────────────────────────
+interface EBState { hasError: boolean; message: string }
+class ErrorBoundary extends Component<{ children: ReactNode }, EBState> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false, message: "" };
+  }
+  static getDerivedStateFromError(err: Error): EBState {
+    return { hasError: true, message: err?.message || "خطأ غير معروف" };
+  }
+  componentDidCatch() {
+    this.setState((s) => ({ ...s, hasError: true }));
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex flex-col items-center justify-center min-h-[40vh] gap-4 p-8 text-center">
+          <AlertCircle size={48} className="text-red-400" />
+          <div>
+            <p className="text-lg font-semibold text-foreground mb-1">حدث خطأ في عرض المحتوى</p>
+            <p className="text-sm text-muted-foreground mb-4">{this.state.message}</p>
+            <button
+              onClick={() => this.setState({ hasError: false, message: "" })}
+              className="bg-primary text-white px-5 py-2 rounded-lg text-sm font-medium hover:opacity-90 transition"
+            >
+              إعادة المحاولة
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 type Status = "idle" | "processing" | "done" | "error";
 type UploadStatus = "idle" | "reading" | "ready" | "error";
@@ -402,9 +438,8 @@ function PageContent({
     return (
       <div style={{ color: "#aaa", fontSize: 15, textAlign: "center", marginTop: 80, lineHeight: 2.2 }}>
         <div style={{ fontSize: 38, marginBottom: 12 }}>📝</div>
-        أدخل نصاً أو ارفع ملفاً
-        <br />
-        <span style={{ fontSize: 12 }}>لتظهر المعاينة هنا فورياً</span>
+        <div>أدخل نصاً أو ارفع ملفاً</div>
+        <div style={{ fontSize: 12, marginTop: 4 }}>لتظهر المعاينة هنا فورياً</div>
       </div>
     );
   }
@@ -570,8 +605,29 @@ function DocumentFormatterSection() {
   const [hadEncodingIssues, setHadEncodingIssues] = useState(false);
   const [structuredBlocks, setStructuredBlocks] = useState<ParsedBlock[] | null>(null);
 
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied">("idle");
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleCopyText = async () => {
+    const activeBlocks = structuredBlocks ?? (blocks.length > 0 ? blocks : parseText(text));
+    const lines: string[] = [];
+    for (const block of activeBlocks) {
+      if (block.type === "empty") { lines.push(""); continue; }
+      if (block.type === "heading1" && block.text) { lines.push(`# ${block.text}`); continue; }
+      if (block.type === "heading2" && block.text) { lines.push(`## ${block.text}`); continue; }
+      if (block.type === "paragraph" && block.text) { lines.push(block.text); continue; }
+      if (block.type === "table" && block.table) {
+        lines.push(block.table.headers.join(" | "));
+        lines.push(block.table.headers.map(() => "---").join(" | "));
+        for (const row of block.table.rows) lines.push(row.join(" | "));
+      }
+    }
+    await navigator.clipboard.writeText(lines.join("\n"));
+    setCopyStatus("copied");
+    setTimeout(() => setCopyStatus("idle"), 2500);
+  };
 
   const handleAnalyze = () => {
     if (!text.trim()) return;
@@ -882,6 +938,16 @@ function DocumentFormatterSection() {
               <><Download size={15} />إنشاء وتحميل ملف وورد</>
             )}
           </button>
+
+          <button onClick={handleCopyText} disabled={!hasContent}
+            data-testid="button-copy-text"
+            className="flex items-center gap-2 bg-slate-100 text-slate-700 border border-slate-200 px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-200 disabled:opacity-40 transition">
+            {copyStatus === "copied" ? (
+              <><CheckCircle size={15} className="text-emerald-600" />تم النسخ!</>
+            ) : (
+              <><Copy size={15} />نسخ النص المنسّق</>
+            )}
+          </button>
         </div>
       </div>
 
@@ -994,11 +1060,13 @@ export default function App() {
       </div>
 
       <main className="max-w-5xl mx-auto px-4 py-5">
-        {activeTab === "formatter" ? (
-          <DocumentFormatterSection />
-        ) : (
-          <HtmlExporterSection />
-        )}
+        <ErrorBoundary>
+          {activeTab === "formatter" ? (
+            <DocumentFormatterSection />
+          ) : (
+            <HtmlExporterSection />
+          )}
+        </ErrorBoundary>
       </main>
     </div>
   );
