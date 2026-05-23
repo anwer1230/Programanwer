@@ -27,6 +27,17 @@ import { BorderPreset } from "./borderPresets";
 export const ARABIC_FONT = "Simplified Arabic";
 export const ENGLISH_FONT = "Times New Roman";
 
+export interface DocxRenderOptions {
+  arabicFont?: string;
+  englishFont?: string;
+  fontSize?: number | null;
+  margins?: { top: number; bottom: number; left: number; right: number } | null;
+}
+
+let _opts: DocxRenderOptions = {};
+function _af() { return _opts.arabicFont ?? ARABIC_FONT; }
+function _ef() { return _opts.englishFont ?? ENGLISH_FONT; }
+
 export function isArabicDominant(text: string): boolean {
   const arabicChars = (
     text.match(/[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || []
@@ -66,14 +77,15 @@ export function makeTextRuns(
   const segments = splitIntoSegments(text);
   if (segments.length === 0) return [new TextRun({ text: "" })];
 
+  const finalSize = (_opts.fontSize ?? size);
   return segments.map(
     (seg) =>
       new TextRun({
         text: seg.text,
         font: seg.arabic
-          ? { name: ARABIC_FONT, cs: ARABIC_FONT, eastAsia: ARABIC_FONT }
-          : { name: ENGLISH_FONT, cs: ENGLISH_FONT },
-        size: size * 2,
+          ? { name: _af(), cs: _af(), eastAsia: _af() }
+          : { name: _ef(), cs: _ef() },
+        size: finalSize * 2,
         bold,
         italics: italic,
         color: color,
@@ -146,7 +158,7 @@ export function makeTableCell(
   return new TableCell({
     children: [
       new Paragraph({
-        children: makeTextRuns(text || "", { size: 12, bold: isHeader }),
+        children: makeTextRuns(text || "", { size: _opts.fontSize ?? 12, bold: isHeader }),
         bidirectional: arabic,
         alignment: arabic ? AlignmentType.RIGHT : AlignmentType.CENTER,
         spacing: { line: 276 },
@@ -252,6 +264,15 @@ export function makeDocTable(headers: string[], rows: string[][]): Table {
 // ─── Page setup ───────────────────────────────────────────────────────────────
 
 function makePageMargins() {
+  if (_opts.margins) {
+    const cmToTwip = (cm: number) => Math.round(cm * 1440 / 2.54);
+    return {
+      top: cmToTwip(_opts.margins.top),
+      bottom: cmToTwip(_opts.margins.bottom),
+      left: cmToTwip(_opts.margins.left),
+      right: cmToTwip(_opts.margins.right),
+    };
+  }
   return {
     top: convertInchesToTwip(1.0),
     bottom: convertInchesToTwip(1.0),
@@ -365,8 +386,8 @@ function makeFooter(useArabic: boolean) {
           new TextRun({
             children: [PageNumber.CURRENT],
             font: useArabic
-              ? { name: ARABIC_FONT, cs: ARABIC_FONT }
-              : { name: ENGLISH_FONT, cs: ENGLISH_FONT },
+              ? { name: _af(), cs: _af() }
+              : { name: _ef(), cs: _ef() },
             size: 22,
           }),
         ],
@@ -383,16 +404,12 @@ function splitBlocksAtPage(blocks: ParsedBlock[], pageCount: number): number {
 // ─── Document styles ──────────────────────────────────────────────────────────
 
 function makeDocumentStyles() {
+  const sz = (_opts.fontSize ?? 14) * 2;
   return {
     default: {
       document: {
-        run: {
-          font: { name: ARABIC_FONT, cs: ARABIC_FONT },
-          size: 28,
-        },
-        paragraph: {
-          spacing: { line: 360 },
-        },
+        run: { font: { name: _af(), cs: _af() }, size: sz },
+        paragraph: { spacing: { line: 360 } },
       },
     },
     paragraphStyles: [
@@ -400,13 +417,8 @@ function makeDocumentStyles() {
         id: "Normal",
         name: "Normal",
         quickFormat: true,
-        run: {
-          font: { name: ARABIC_FONT, cs: ARABIC_FONT },
-          size: 28,
-        },
-        paragraph: {
-          spacing: { line: 360 },
-        },
+        run: { font: { name: _af(), cs: _af() }, size: sz },
+        paragraph: { spacing: { line: 360 } },
       },
     ],
   };
@@ -418,8 +430,10 @@ export async function generateDocx(
   blocks: ParsedBlock[],
   fileName = "المستند_المنسّق",
   prelimPages = 0,
-  borderPreset: BorderPreset | null = null
+  borderPreset: BorderPreset | null = null,
+  renderOpts: DocxRenderOptions = {}
 ): Promise<void> {
+  _opts = renderOpts;
   const borders = buildPageBorders(borderPreset);
 
   let sections;

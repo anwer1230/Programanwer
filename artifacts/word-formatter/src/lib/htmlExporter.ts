@@ -21,7 +21,6 @@ import {
   PageBorderOffsetFrom,
 } from "docx";
 
-// ─── Font constants ────────────────────────────────────────────────────────────
 const ARABIC_FONT = "Simplified Arabic";
 const ENGLISH_FONT = "Times New Roman";
 
@@ -31,260 +30,264 @@ function isArabicDominant(text: string): boolean {
   return ar >= en;
 }
 
-// ─── HTML → PDF ──────────────────────────────────────────────────────────────
+// ─── Computed-style helpers ───────────────────────────────────────────────────
 
-export async function exportHtmlAsPdf(html: string, fileName: string): Promise<void> {
-  const container = document.createElement("div");
-  container.style.cssText = [
-    "position:fixed",
-    "left:-9999px",
-    "top:0",
-    "width:794px",
-    "min-height:200px",
-    "padding:56px 64px",
-    "box-sizing:border-box",
-    "background:white",
-    "font-family:'Times New Roman',serif",
-    "font-size:14pt",
-    "line-height:1.6",
-    "color:#000",
-  ].join(";");
-  container.innerHTML = html;
-  document.body.appendChild(container);
-
-  try {
-    const canvas = await html2canvas(container, {
-      scale: 2,
-      useCORS: true,
-      allowTaint: true,
-      logging: false,
-      backgroundColor: "#ffffff",
-    });
-
-    const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-    const pageWidthMm = pdf.internal.pageSize.getWidth();
-    const pageHeightMm = pdf.internal.pageSize.getHeight();
-    const marginMm = 10;
-    const contentWidthMm = pageWidthMm - marginMm * 2;
-    const canvasWidthPx = canvas.width;
-    const canvasHeightPx = canvas.height;
-    const pxPerMm = canvasWidthPx / contentWidthMm;
-    const contentHeightMm = canvasHeightPx / pxPerMm;
-    const pageContentHeightMm = pageHeightMm - marginMm * 2;
-
-    let sourceYMm = 0;
-    let firstPage = true;
-
-    while (sourceYMm < contentHeightMm) {
-      if (!firstPage) pdf.addPage();
-      firstPage = false;
-
-      const sliceHeightMm = Math.min(pageContentHeightMm, contentHeightMm - sourceYMm);
-      const sourceYPx = Math.round(sourceYMm * pxPerMm);
-      const sliceHeightPx = Math.round(sliceHeightMm * pxPerMm);
-
-      const sliceCanvas = document.createElement("canvas");
-      sliceCanvas.width = canvasWidthPx;
-      sliceCanvas.height = sliceHeightPx;
-      const ctx = sliceCanvas.getContext("2d")!;
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
-      ctx.drawImage(canvas, 0, sourceYPx, canvasWidthPx, sliceHeightPx, 0, 0, canvasWidthPx, sliceHeightPx);
-
-      const imgData = sliceCanvas.toDataURL("image/jpeg", 0.95);
-      pdf.addImage(imgData, "JPEG", marginMm, marginMm, contentWidthMm, sliceHeightMm);
-      sourceYMm += pageContentHeightMm;
-    }
-
-    pdf.save(`${fileName}.pdf`);
-  } finally {
-    document.body.removeChild(container);
-  }
+function rgbToHex(rgb: string): string | undefined {
+  if (!rgb || rgb === "transparent" || rgb === "rgba(0, 0, 0, 0)" || rgb === "") return undefined;
+  const m = rgb.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  if (!m) return undefined;
+  const hex = [m[1], m[2], m[3]]
+    .map((n) => parseInt(n).toString(16).padStart(2, "0"))
+    .join("")
+    .toUpperCase();
+  return hex;
 }
 
-// ─── Rich inline text (preserves bold, italic, underline, color, size) ────────
+function pxToPt(px: number): number {
+  return Math.round(px * 0.75);
+}
 
-interface RunStyle {
+interface ComputedStyle2 {
+  color?: string;
+  bgColor?: string;
+  fontSize: number;
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  strike: boolean;
+  textAlign: string;
+  hasBorderRight: boolean;
+  borderRightColor?: string;
+}
+
+function readComputedStyle(el: Element): ComputedStyle2 {
+  const cs = window.getComputedStyle(el);
+  const fontSize = pxToPt(parseFloat(cs.fontSize) || 16);
+  const fontWeight = cs.fontWeight;
+  const bold =
+    fontWeight === "bold" || fontWeight === "bolder" || parseInt(fontWeight) >= 600;
+  const italic = cs.fontStyle === "italic" || cs.fontStyle === "oblique";
+  const textDeco = cs.textDecoration || "";
+  const underline = textDeco.includes("underline");
+  const strike = textDeco.includes("line-through");
+  const textAlign = cs.textAlign;
+  const rawBg = cs.backgroundColor;
+  const bgColor = rawBg && rawBg !== "rgba(0, 0, 0, 0)" ? rgbToHex(rawBg) : undefined;
+  const color = rgbToHex(cs.color);
+  const bRW = parseFloat(cs.borderRightWidth) || 0;
+  const hasBorderRight = bRW > 0 && cs.borderRightStyle !== "none";
+  const borderRightColor = hasBorderRight ? rgbToHex(cs.borderRightColor) : undefined;
+
+  return {
+    color: color === "000000" ? undefined : color,
+    bgColor,
+    fontSize: Math.max(8, fontSize),
+    bold,
+    italic,
+    underline,
+    strike,
+    textAlign,
+    hasBorderRight,
+    borderRightColor,
+  };
+}
+
+// ─── Inject HTML+CSS into live DOM for rendering ──────────────────────────────
+
+interface RenderContext {
+  wrapper: HTMLDivElement;
+  cleanup: () => void;
+}
+
+async function mountHtmlForRender(html: string): Promise<RenderContext> {
+  const isFullDoc = /<html[\s>]/i.test(html);
+  const srcDoc = isFullDoc
+    ? html
+    : `<!DOCTYPE html><html><head></head><body>${html}</body></html>`;
+
+  const parser = new DOMParser();
+  const parsed = parser.parseFromString(srcDoc, "text/html");
+
+  const injectedEls: Element[] = [];
+
+  for (const styleEl of Array.from(parsed.querySelectorAll("style"))) {
+    const s = document.createElement("style");
+    s.textContent = styleEl.textContent;
+    document.head.appendChild(s);
+    injectedEls.push(s);
+  }
+
+  const wrapper = document.createElement("div");
+  wrapper.style.cssText =
+    "position:fixed;left:-9999px;top:0;width:794px;visibility:hidden;z-index:-9999;direction:rtl";
+  wrapper.innerHTML = parsed.body.innerHTML;
+  document.body.appendChild(wrapper);
+
+  await new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 60)));
+
+  const cleanup = () => {
+    if (document.body.contains(wrapper)) document.body.removeChild(wrapper);
+    for (const el of injectedEls) {
+      if (el.parentNode) el.parentNode.removeChild(el);
+    }
+  };
+
+  return { wrapper, cleanup };
+}
+
+// ─── Run collector ────────────────────────────────────────────────────────────
+
+interface RunOpts {
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
-  color?: string;
-  size?: number; // in pt
   strike?: boolean;
+  color?: string;
+  size?: number;
 }
 
-function extractInlineStyle(el: Element, inherited: RunStyle): RunStyle {
-  const style = el.getAttribute("style") ?? "";
-  const tag = el.tagName.toUpperCase();
-  const result: RunStyle = { ...inherited };
-
-  if (
-    tag === "B" || tag === "STRONG" ||
-    /font-weight\s*:\s*(bold|[789]\d\d)/i.test(style)
-  ) result.bold = true;
-
-  if (tag === "I" || tag === "EM" || /font-style\s*:\s*italic/i.test(style))
-    result.italic = true;
-
-  if (tag === "U" || /text-decoration[^;]*:\s*[^;]*underline/i.test(style))
-    result.underline = true;
-
-  if (tag === "S" || tag === "STRIKE" || tag === "DEL" ||
-      /text-decoration[^;]*:\s*[^;]*line-through/i.test(style))
-    result.strike = true;
-
-  // Color: support #hex and rgb()
-  const colorM = style.match(/(?:^|;)\s*color\s*:\s*(#[0-9a-fA-F]{3,6}|rgb\([^)]+\))/i);
-  if (colorM) {
-    const raw = colorM[1].trim();
-    if (raw.startsWith("#")) {
-      const hex = raw.slice(1);
-      result.color = (hex.length === 3
-        ? hex.split("").map((c) => c + c).join("")
-        : hex
-      ).toUpperCase().slice(0, 6);
-    } else {
-      const rgbM = raw.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/i);
-      if (rgbM) {
-        result.color = [rgbM[1], rgbM[2], rgbM[3]]
-          .map((n) => parseInt(n).toString(16).padStart(2, "0"))
-          .join("")
-          .toUpperCase();
-      }
-    }
-  }
-
-  // Font size
-  const szM = style.match(/font-size\s*:\s*(\d+(?:\.\d+)?)(pt|px|em|rem)/i);
-  if (szM) {
-    const v = parseFloat(szM[1]);
-    const u = szM[2].toLowerCase();
-    if (u === "pt") result.size = v;
-    else if (u === "px") result.size = Math.round(v * 0.75);
-    else result.size = Math.round(v * 12);
-  }
-
-  return result;
-}
-
-function makeRunFromText(text: string, style: RunStyle): TextRun | null {
+function makeRun(text: string, opts: RunOpts = {}): TextRun | null {
   const cleaned = text.replace(/\u00a0/g, " ");
   if (!cleaned) return null;
-
   const arabic = isArabicDominant(cleaned);
-  const pt = style.size ?? 14;
-
+  const pt = opts.size ?? 14;
   return new TextRun({
     text: cleaned,
     font: arabic
       ? { name: ARABIC_FONT, cs: ARABIC_FONT, eastAsia: ARABIC_FONT }
       : { name: ENGLISH_FONT, cs: ENGLISH_FONT },
     size: pt * 2,
-    bold: style.bold ?? false,
-    italics: style.italic ?? false,
-    underline: style.underline ? { type: "single" as never } : undefined,
-    strike: style.strike ?? false,
-    color: style.color,
+    bold: opts.bold ?? false,
+    italics: opts.italic ?? false,
+    underline: opts.underline ? { type: "single" as never } : undefined,
+    strike: opts.strike ?? false,
+    color: opts.color,
     rightToLeft: arabic,
   });
 }
 
-/** Recursively walk DOM nodes and collect TextRuns with full inline style */
-function collectRuns(node: Node, style: RunStyle, runs: TextRun[]): void {
+function collectRunsFromNode(node: Node, inherited: RunOpts, runs: TextRun[]): void {
   if (node.nodeType === Node.TEXT_NODE) {
     const text = node.textContent ?? "";
-    if (!text) return;
-    const run = makeRunFromText(text, style);
+    if (!text.trim()) {
+      if (text.includes(" ") || text.includes("\n")) {
+        const run = makeRun(" ", inherited);
+        if (run) runs.push(run);
+      }
+      return;
+    }
+    const run = makeRun(text, inherited);
     if (run) runs.push(run);
     return;
   }
-
   if (node.nodeType !== Node.ELEMENT_NODE) return;
 
   const el = node as Element;
   const tag = el.tagName.toUpperCase();
 
-  // Block-level elements inside inline context → just recurse
-  const BLOCK_TAGS = new Set([
-    "DIV", "P", "H1", "H2", "H3", "H4", "H5", "H6",
-    "UL", "OL", "LI", "TABLE", "THEAD", "TBODY", "TFOOT", "TR", "TD", "TH",
-    "BLOCKQUOTE", "PRE", "HR", "BR",
-  ]);
-
   if (tag === "BR") {
     runs.push(new TextRun({ break: 1 }));
     return;
   }
+  if (["STYLE", "SCRIPT", "NOSCRIPT"].includes(tag)) return;
+
+  const BLOCK_TAGS = new Set([
+    "DIV","P","H1","H2","H3","H4","H5","H6","UL","OL","LI",
+    "TABLE","THEAD","TBODY","TFOOT","TR","TD","TH","BLOCKQUOTE","PRE","HR",
+    "SECTION","ARTICLE","HEADER","FOOTER","ASIDE","MAIN","FIGURE","NAV",
+  ]);
+
+  const cs = readComputedStyle(el);
+  const opts: RunOpts = {
+    bold: cs.bold || inherited.bold,
+    italic: cs.italic || inherited.italic,
+    underline: cs.underline || inherited.underline,
+    strike: cs.strike || inherited.strike,
+    color: cs.color ?? inherited.color,
+    size: cs.fontSize ?? inherited.size,
+  };
 
   if (BLOCK_TAGS.has(tag)) {
-    for (const child of Array.from(el.childNodes)) collectRuns(child, style, runs);
+    for (const child of Array.from(el.childNodes)) collectRunsFromNode(child, opts, runs);
     return;
   }
 
-  const newStyle = extractInlineStyle(el, style);
-  for (const child of Array.from(el.childNodes)) collectRuns(child, newStyle, runs);
+  for (const child of Array.from(el.childNodes)) collectRunsFromNode(child, opts, runs);
 }
 
-// ─── Alignment detection ──────────────────────────────────────────────────────
+// ─── Paragraph builder using computed styles ──────────────────────────────────
 
-function getHtmlAlignment(
-  el: Element
-): "right" | "left" | "center" | "justify" | undefined {
-  const style = (el.getAttribute("style") ?? "").toLowerCase();
-  const align = el.getAttribute("align") ?? "";
-
-  if (style.includes("text-align:center") || style.includes("text-align: center") || align === "center") return "center";
-  if (style.includes("text-align:right") || style.includes("text-align: right") || align === "right") return "right";
-  if (style.includes("text-align:left") || style.includes("text-align: left") || align === "left") return "left";
-  if (style.includes("text-align:justify") || style.includes("text-align: justify")) return "justify";
-  return undefined;
-}
-
-function resolveAlignmentFromStyle(
-  alignment: "right" | "left" | "center" | "justify" | undefined,
-  arabic: boolean
-): AlignmentType {
-  if (alignment === "center") return AlignmentType.CENTER;
-  if (alignment === "left") return AlignmentType.LEFT;
-  if (alignment === "right") return AlignmentType.RIGHT;
-  if (alignment === "justify")
-    return arabic ? AlignmentType.THAI_DISTRIBUTE : AlignmentType.DISTRIBUTE;
-  return arabic ? AlignmentType.RIGHT : AlignmentType.LEFT;
-}
-
-// ─── Paragraph builder ────────────────────────────────────────────────────────
-
-function buildParagraphFromEl(
+function buildComputedParagraph(
   el: Element,
-  baseStyle: RunStyle = {},
-  extraOpts: { spacing?: number } = {}
+  overrideStyle?: Partial<RunOpts>
 ): Paragraph {
-  const runs: TextRun[] = [];
-  const style = extractInlineStyle(el, baseStyle);
-  for (const child of Array.from(el.childNodes)) collectRuns(child, style, runs);
+  const cs = readComputedStyle(el);
+  const base: RunOpts = {
+    bold: cs.bold,
+    italic: cs.italic,
+    underline: cs.underline,
+    strike: cs.strike,
+    color: cs.color,
+    size: cs.fontSize,
+    ...overrideStyle,
+  };
 
+  const runs: TextRun[] = [];
+  for (const child of Array.from(el.childNodes)) collectRunsFromNode(child, base, runs);
   if (runs.length === 0) runs.push(new TextRun({ text: "" }));
 
   const text = el.textContent ?? "";
   const arabic = isArabicDominant(text);
-  const alignment = getHtmlAlignment(el);
+
+  let alignment = AlignmentType.RIGHT;
+  if (cs.textAlign === "center") alignment = AlignmentType.CENTER;
+  else if (cs.textAlign === "left") alignment = AlignmentType.LEFT;
+  else if (cs.textAlign === "justify" || cs.textAlign === "justify-all")
+    alignment = arabic ? AlignmentType.THAI_DISTRIBUTE : AlignmentType.DISTRIBUTE;
+  else if (!arabic) alignment = AlignmentType.LEFT;
+
+  const spacing = Math.max(240, Math.min(480, cs.fontSize * 30));
+
+  const paragraphBorder = cs.hasBorderRight
+    ? {
+        right: {
+          style: BorderStyle.THICK,
+          size: 12,
+          color: cs.borderRightColor ?? "F6B352",
+          space: 8,
+        },
+      }
+    : undefined;
+
+  const shading =
+    cs.bgColor && cs.bgColor !== "FFFFFF"
+      ? { fill: cs.bgColor, type: ShadingType.CLEAR, color: "auto" }
+      : undefined;
 
   return new Paragraph({
     children: runs,
     bidirectional: arabic,
-    alignment: resolveAlignmentFromStyle(alignment, arabic),
-    spacing: { line: extraOpts.spacing ?? 360, lineRule: "auto" as never },
+    alignment,
+    spacing: { line: spacing, lineRule: "auto" as never },
+    border: paragraphBorder,
+    shading,
   });
 }
 
-// ─── Table from HTML ──────────────────────────────────────────────────────────
+// ─── Table from computed DOM ──────────────────────────────────────────────────
 
-function buildTableFromHtml(tableEl: Element): Table | null {
+function buildComputedTable(tableEl: Element): Table | null {
   const rows = Array.from(tableEl.querySelectorAll("tr"));
   if (rows.length === 0) return null;
 
-  const borderAttr = tableEl.getAttribute("border");
-  const hasBorder = borderAttr && borderAttr !== "0";
+  const headerText = rows[0]
+    ? Array.from(rows[0].querySelectorAll("td, th"))
+        .map((c) => c.textContent ?? "")
+        .join(" ")
+    : "";
+  const isArabic = isArabicDominant(headerText);
+  const tableCs = readComputedStyle(tableEl);
+  const hasBorder = tableCs.hasBorderRight || tableEl.getAttribute("border");
 
   const borders = hasBorder
     ? {
@@ -304,41 +307,45 @@ function buildTableFromHtml(tableEl: Element): Table | null {
         insideV: { style: BorderStyle.SINGLE, size: 1, color: "DDDDDD" },
       };
 
-  const headerText = rows[0]
-    ? Array.from(rows[0].querySelectorAll("td, th"))
-        .map((c) => c.textContent ?? "")
-        .join(" ")
-    : "";
-  const isArabic = isArabicDominant(headerText);
-
   const docRows = rows.map((tr, ri) => {
     const cells = Array.from(tr.querySelectorAll("td, th"));
-    const isHeaderRow = ri === 0 && Array.from(tr.querySelectorAll("th")).length > 0;
+    const isHeaderRow = ri === 0 && tr.querySelectorAll("th").length > 0;
 
     const docCells = cells.map((td) => {
       const isHeader = isHeaderRow || td.tagName.toUpperCase() === "TH";
+      const cellCs = readComputedStyle(td);
       const cellRuns: TextRun[] = [];
       for (const child of Array.from(td.childNodes)) {
-        collectRuns(child, { bold: isHeader, size: 12 }, cellRuns);
+        collectRunsFromNode(
+          child,
+          { bold: isHeader, size: cellCs.fontSize ?? 12, color: cellCs.color },
+          cellRuns
+        );
       }
       if (cellRuns.length === 0) cellRuns.push(new TextRun({ text: "" }));
 
       const cellText = td.textContent ?? "";
       const cellArabic = isArabicDominant(cellText);
-      const align = getHtmlAlignment(td);
+      let cellAlign = cellArabic ? AlignmentType.RIGHT : AlignmentType.LEFT;
+      if (cellCs.textAlign === "center") cellAlign = AlignmentType.CENTER;
+
+      const cellBg = cellCs.bgColor && cellCs.bgColor !== "FFFFFF" ? cellCs.bgColor : undefined;
+      const cellShading = cellBg
+        ? { fill: cellBg, type: ShadingType.CLEAR, color: "auto" }
+        : isHeader
+        ? { fill: "D6E8F8", type: ShadingType.CLEAR, color: "auto" }
+        : undefined;
 
       return new TableCell({
         children: [
           new Paragraph({
             children: cellRuns,
             bidirectional: cellArabic,
-            alignment: resolveAlignmentFromStyle(align, cellArabic),
+            alignment: cellAlign,
             spacing: { line: 276 },
           }),
         ],
-        shading: isHeader
-          ? { fill: "D6E8F8", type: ShadingType.CLEAR, color: "auto" }
-          : undefined,
+        shading: cellShading,
         margins: {
           top: convertInchesToTwip(0.05),
           bottom: convertInchesToTwip(0.05),
@@ -350,11 +357,9 @@ function buildTableFromHtml(tableEl: Element): Table | null {
 
     return new TableRow({
       children: docCells,
-      tableHeader: ri === 0 && Array.from(tr.querySelectorAll("th")).length > 0,
+      tableHeader: isHeaderRow,
     });
   });
-
-  if (docRows.length === 0) return null;
 
   return new Table({
     layout: TableLayoutType.AUTOFIT,
@@ -365,53 +370,138 @@ function buildTableFromHtml(tableEl: Element): Table | null {
   });
 }
 
-// ─── HTML → docx elements ─────────────────────────────────────────────────────
+// ─── Grid/flex container → 2-column DOCX table ───────────────────────────────
 
-function processHtmlNode(el: Element, elements: (Paragraph | Table)[]): void {
+function buildGridAsTable(el: Element): Table | null {
+  const children = Array.from(el.children).filter((c) => {
+    const cs = window.getComputedStyle(c);
+    return cs.display !== "none" && c.tagName.toUpperCase() !== "STYLE";
+  });
+  if (children.length < 2) return null;
+
+  const rows: TableRow[] = [];
+  for (let i = 0; i < children.length; i += 2) {
+    const left = children[i];
+    const right = children[i + 1];
+
+    const makeCell = (cellEl: Element | undefined): TableCell => {
+      if (!cellEl) {
+        return new TableCell({
+          children: [new Paragraph({ children: [] })],
+          width: { size: 50, type: WidthType.PERCENTAGE },
+        });
+      }
+      const cs = readComputedStyle(cellEl);
+      const shading = cs.bgColor && cs.bgColor !== "FFFFFF"
+        ? { fill: cs.bgColor, type: ShadingType.CLEAR, color: "auto" }
+        : undefined;
+
+      const cellElements: (Paragraph | Table)[] = [];
+      collectElementsFromNode(cellEl, cellElements);
+
+      return new TableCell({
+        children:
+          cellElements.length > 0
+            ? cellElements
+            : [new Paragraph({ children: [] })],
+        shading,
+        width: { size: 50, type: WidthType.PERCENTAGE },
+        margins: {
+          top: convertInchesToTwip(0.1),
+          bottom: convertInchesToTwip(0.1),
+          left: convertInchesToTwip(0.1),
+          right: convertInchesToTwip(0.1),
+        },
+      });
+    };
+
+    rows.push(
+      new TableRow({
+        children: [makeCell(left), makeCell(right)],
+      })
+    );
+  }
+
+  if (rows.length === 0) return null;
+
+  return new Table({
+    layout: TableLayoutType.FIXED,
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows,
+    borders: {
+      top: { style: BorderStyle.NONE },
+      bottom: { style: BorderStyle.NONE },
+      left: { style: BorderStyle.NONE },
+      right: { style: BorderStyle.NONE },
+      insideH: { style: BorderStyle.NONE },
+      insideV: { style: BorderStyle.NONE },
+    },
+  });
+}
+
+// ─── Main node processor ──────────────────────────────────────────────────────
+
+const SKIP_TAGS = new Set(["STYLE", "SCRIPT", "NOSCRIPT", "HEAD", "META", "LINK", "TITLE"]);
+const BLOCK_CONTAINER_TAGS = new Set([
+  "DIV","SECTION","ARTICLE","MAIN","HEADER","FOOTER","ASIDE","NAV",
+  "FIGURE","FIGCAPTION","BODY","FORM","FIELDSET","DETAILS","SUMMARY",
+]);
+
+function isGridContainer(el: Element): boolean {
+  const cs = window.getComputedStyle(el);
+  const display = cs.display;
+  return (
+    (display === "grid" || display === "inline-grid" ||
+     display === "flex" || display === "inline-flex") &&
+    el.children.length >= 2 &&
+    Array.from(el.children).every((c) => {
+      const ccs = window.getComputedStyle(c);
+      return ccs.display !== "none";
+    })
+  );
+}
+
+function collectElementsFromNode(
+  el: Element,
+  elements: (Paragraph | Table)[]
+): void {
   const tag = el.tagName.toUpperCase();
+
+  if (SKIP_TAGS.has(tag)) return;
 
   switch (tag) {
     case "H1":
-      elements.push(buildParagraphFromEl(el, { bold: true, size: 18 }, { spacing: 400 }));
-      break;
     case "H2":
-      elements.push(buildParagraphFromEl(el, { bold: true, size: 16 }, { spacing: 380 }));
-      break;
     case "H3":
-      elements.push(buildParagraphFromEl(el, { bold: true, size: 14 }, { spacing: 360 }));
-      break;
     case "H4":
     case "H5":
-    case "H6":
-      elements.push(buildParagraphFromEl(el, { bold: true, size: 13 }, { spacing: 340 }));
+    case "H6": {
+      const para = buildComputedParagraph(el);
+      elements.push(para);
+      elements.push(new Paragraph({ children: [], spacing: { line: 160 } }));
       break;
+    }
 
     case "P": {
       const text = (el.textContent ?? "").trim();
       if (!text) {
         elements.push(new Paragraph({ children: [], spacing: { line: 240 } }));
       } else {
-        elements.push(buildParagraphFromEl(el, { size: 14 }, { spacing: 360 }));
+        elements.push(buildComputedParagraph(el));
       }
       break;
     }
 
-    case "BLOCKQUOTE": {
-      const text = (el.textContent ?? "").trim();
-      if (text) {
-        elements.push(
-          buildParagraphFromEl(el, { italic: true, size: 13, color: "555555" }, { spacing: 320 })
-        );
-      }
+    case "BLOCKQUOTE":
+      elements.push(buildComputedParagraph(el, { italic: true }));
       break;
-    }
 
     case "TABLE": {
-      const table = buildTableFromHtml(el);
+      const table = buildComputedTable(el);
       if (table) {
-        elements.push(new Paragraph({ children: [], spacing: { line: 200 } }));
+        elements.push(new Paragraph({ children: [], spacing: { line: 160 } }));
         elements.push(table);
-        elements.push(new Paragraph({ children: [], spacing: { line: 200 } }));
+        elements.push(new Paragraph({ children: [], spacing: { line: 160 } }));
       }
       break;
     }
@@ -420,27 +510,32 @@ function processHtmlNode(el: Element, elements: (Paragraph | Table)[]): void {
     case "OL": {
       const lis = Array.from(el.querySelectorAll(":scope > li"));
       lis.forEach((li, i) => {
-        const marker = tag === "OL" ? `${i + 1}. ` : "• ";
-        const runs: TextRun[] = [];
+        const liCs = readComputedStyle(li);
         const arabic = isArabicDominant(li.textContent ?? "");
-        runs.push(
+        const marker = tag === "OL" ? `${i + 1}. ` : "• ";
+        const runs: TextRun[] = [
           new TextRun({
             text: marker,
-            font: arabic
-              ? { name: ARABIC_FONT, cs: ARABIC_FONT }
-              : { name: ENGLISH_FONT },
-            size: 28,
+            font: arabic ? { name: ARABIC_FONT, cs: ARABIC_FONT } : { name: ENGLISH_FONT },
+            size: (liCs.fontSize ?? 14) * 2,
             rightToLeft: arabic,
-          })
-        );
-        for (const child of Array.from(li.childNodes)) collectRuns(child, { size: 14 }, runs);
+            color: liCs.color,
+          }),
+        ];
+        for (const child of Array.from(li.childNodes)) {
+          collectRunsFromNode(child, { size: liCs.fontSize ?? 14, color: liCs.color, bold: liCs.bold }, runs);
+        }
+        const shading = liCs.bgColor && liCs.bgColor !== "FFFFFF"
+          ? { fill: liCs.bgColor, type: ShadingType.CLEAR, color: "auto" }
+          : undefined;
         elements.push(
           new Paragraph({
             children: runs,
             bidirectional: arabic,
             alignment: arabic ? AlignmentType.RIGHT : AlignmentType.LEFT,
             spacing: { line: 300 },
-            indent: { left: convertInchesToTwip(0.25) },
+            indent: { left: convertInchesToTwip(0.2) },
+            shading,
           })
         );
       });
@@ -448,7 +543,6 @@ function processHtmlNode(el: Element, elements: (Paragraph | Table)[]): void {
     }
 
     case "HR":
-      elements.push(new Paragraph({ children: [], spacing: { line: 120 } }));
       elements.push(new Paragraph({ children: [], spacing: { line: 120 } }));
       break;
 
@@ -478,27 +572,126 @@ function processHtmlNode(el: Element, elements: (Paragraph | Table)[]): void {
       break;
     }
 
-    case "DIV":
-    case "SECTION":
-    case "ARTICLE":
-    case "MAIN":
-    case "HEADER":
-    case "FOOTER":
-    case "ASIDE":
-    case "NAV":
-    case "FIGURE":
-    case "FIGCAPTION":
-    case "BODY": {
-      for (const child of Array.from(el.children)) processHtmlNode(child, elements);
-      break;
-    }
-
     default: {
-      // Try to handle unknown elements with text content
+      if (BLOCK_CONTAINER_TAGS.has(tag)) {
+        // Check if it's a grid/flex container → convert to table
+        if (isGridContainer(el)) {
+          const gridTable = buildGridAsTable(el);
+          if (gridTable) {
+            elements.push(new Paragraph({ children: [], spacing: { line: 120 } }));
+            elements.push(gridTable);
+            elements.push(new Paragraph({ children: [], spacing: { line: 120 } }));
+            break;
+          }
+        }
+
+        // Check if it has text directly (no block children) → paragraph
+        const blockChildren = Array.from(el.children).filter((c) => {
+          const t = c.tagName.toUpperCase();
+          return !SKIP_TAGS.has(t);
+        });
+
+        if (blockChildren.length === 0 && (el.textContent ?? "").trim()) {
+          elements.push(buildComputedParagraph(el));
+          break;
+        }
+
+        for (const child of Array.from(el.children)) {
+          collectElementsFromNode(child, elements);
+        }
+        break;
+      }
+
+      // Inline/unknown with text → paragraph
       const text = (el.textContent ?? "").trim();
       if (text) {
-        elements.push(buildParagraphFromEl(el, { size: 14 }, { spacing: 320 }));
+        elements.push(buildComputedParagraph(el));
       }
+    }
+  }
+}
+
+// ─── HTML → PDF ──────────────────────────────────────────────────────────────
+
+export async function exportHtmlAsPdf(html: string, fileName: string): Promise<void> {
+  const container = document.createElement("div");
+  container.style.cssText = [
+    "position:fixed",
+    "left:-9999px",
+    "top:0",
+    "width:794px",
+    "min-height:200px",
+    "padding:56px 64px",
+    "box-sizing:border-box",
+    "background:white",
+    "font-family:'Times New Roman',serif",
+    "font-size:14pt",
+    "line-height:1.6",
+    "color:#000",
+  ].join(";");
+
+  const isFullDoc = /<html[\s>]/i.test(html);
+  const srcDoc = isFullDoc
+    ? html
+    : `<!DOCTYPE html><html><head></head><body>${html}</body></html>`;
+  const parser = new DOMParser();
+  const parsed = parser.parseFromString(srcDoc, "text/html");
+
+  const injectedStyles: HTMLStyleElement[] = [];
+  for (const styleEl of Array.from(parsed.querySelectorAll("style"))) {
+    const s = document.createElement("style");
+    s.textContent = styleEl.textContent;
+    document.head.appendChild(s);
+    injectedStyles.push(s);
+  }
+
+  container.innerHTML = parsed.body.innerHTML;
+  document.body.appendChild(container);
+
+  try {
+    const canvas = await html2canvas(container, {
+      scale: 2,
+      useCORS: true,
+      allowTaint: true,
+      logging: false,
+      backgroundColor: "#ffffff",
+    });
+
+    const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+    const pageWidthMm = pdf.internal.pageSize.getWidth();
+    const pageHeightMm = pdf.internal.pageSize.getHeight();
+    const marginMm = 10;
+    const contentWidthMm = pageWidthMm - marginMm * 2;
+    const canvasWidthPx = canvas.width;
+    const canvasHeightPx = canvas.height;
+    const pxPerMm = canvasWidthPx / contentWidthMm;
+    const contentHeightMm = canvasHeightPx / pxPerMm;
+    const pageContentHeightMm = pageHeightMm - marginMm * 2;
+
+    let sourceYMm = 0;
+    let firstPage = true;
+    while (sourceYMm < contentHeightMm) {
+      if (!firstPage) pdf.addPage();
+      firstPage = false;
+      const sliceHeightMm = Math.min(pageContentHeightMm, contentHeightMm - sourceYMm);
+      const sourceYPx = Math.round(sourceYMm * pxPerMm);
+      const sliceHeightPx = Math.round(sliceHeightMm * pxPerMm);
+      const sliceCanvas = document.createElement("canvas");
+      sliceCanvas.width = canvasWidthPx;
+      sliceCanvas.height = sliceHeightPx;
+      const ctx = sliceCanvas.getContext("2d")!;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+      ctx.drawImage(canvas, 0, sourceYPx, canvasWidthPx, sliceHeightPx, 0, 0, canvasWidthPx, sliceHeightPx);
+      const imgData = sliceCanvas.toDataURL("image/jpeg", 0.95);
+      pdf.addImage(imgData, "JPEG", marginMm, marginMm, contentWidthMm, sliceHeightMm);
+      sourceYMm += pageContentHeightMm;
+    }
+    pdf.save(`${fileName}.pdf`);
+  } finally {
+    document.body.removeChild(container);
+    for (const s of injectedStyles) {
+      if (s.parentNode) s.parentNode.removeChild(s);
     }
   }
 }
@@ -506,65 +699,69 @@ function processHtmlNode(el: Element, elements: (Paragraph | Table)[]): void {
 // ─── HTML → Word (.docx) ─────────────────────────────────────────────────────
 
 export async function exportHtmlAsDocx(html: string, fileName: string): Promise<void> {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(`<html><body>${html}</body></html>`, "text/html");
+  const { wrapper, cleanup } = await mountHtmlForRender(html);
 
-  const elements: (Paragraph | Table)[] = [];
-  for (const child of Array.from(doc.body.children)) {
-    processHtmlNode(child, elements);
-  }
+  try {
+    const elements: (Paragraph | Table)[] = [];
+    for (const child of Array.from(wrapper.children)) {
+      collectElementsFromNode(child, elements);
+    }
 
-  // Remove trailing empties
-  while (
-    elements.length > 0 &&
-    elements[elements.length - 1] instanceof Paragraph &&
-    (elements[elements.length - 1] as Paragraph).options?.children?.length === 0
-  ) {
-    elements.pop();
-  }
+    while (
+      elements.length > 0 &&
+      elements[elements.length - 1] instanceof Paragraph
+    ) {
+      const last = elements[elements.length - 1] as Paragraph;
+      const kids = last.options?.children ?? [];
+      if (kids.length === 0) elements.pop();
+      else break;
+    }
 
-  if (elements.length === 0) {
-    elements.push(new Paragraph({ children: [new TextRun({ text: "" })] }));
-  }
+    if (elements.length === 0) {
+      elements.push(new Paragraph({ children: [new TextRun({ text: "" })] }));
+    }
 
-  const wordDoc = new Document({
-    styles: {
-      default: {
-        document: {
-          run: { font: { name: ARABIC_FONT, cs: ARABIC_FONT }, size: 28 },
-          paragraph: { spacing: { line: 360 } },
-        },
-      },
-      paragraphStyles: [
-        {
-          id: "Normal",
-          name: "Normal",
-          quickFormat: true,
-          run: { font: { name: ARABIC_FONT, cs: ARABIC_FONT }, size: 28 },
-          paragraph: { spacing: { line: 360 } },
-        },
-      ],
-    },
-    sections: [
-      {
-        properties: {
-          type: SectionType.CONTINUOUS,
-          page: {
-            margin: {
-              top: convertInchesToTwip(1.0),
-              bottom: convertInchesToTwip(1.0),
-              left: convertInchesToTwip(1.25),
-              right: convertInchesToTwip(1.25),
-            },
+    const wordDoc = new Document({
+      styles: {
+        default: {
+          document: {
+            run: { font: { name: ARABIC_FONT, cs: ARABIC_FONT }, size: 28 },
+            paragraph: { spacing: { line: 360 } },
           },
         },
-        children: elements,
+        paragraphStyles: [
+          {
+            id: "Normal",
+            name: "Normal",
+            quickFormat: true,
+            run: { font: { name: ARABIC_FONT, cs: ARABIC_FONT }, size: 28 },
+            paragraph: { spacing: { line: 360 } },
+          },
+        ],
       },
-    ],
-  });
+      sections: [
+        {
+          properties: {
+            type: SectionType.CONTINUOUS,
+            page: {
+              margin: {
+                top: convertInchesToTwip(1.0),
+                bottom: convertInchesToTwip(1.0),
+                left: convertInchesToTwip(1.25),
+                right: convertInchesToTwip(1.25),
+              },
+            },
+          },
+          children: elements,
+        },
+      ],
+    });
 
-  const blob = await Packer.toBlob(wordDoc);
-  saveAs(blob, `${fileName}.docx`);
+    const blob = await Packer.toBlob(wordDoc);
+    saveAs(blob, `${fileName}.docx`);
+  } finally {
+    cleanup();
+  }
 }
 
 // ─── HTML → Excel ─────────────────────────────────────────────────────────────

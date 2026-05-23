@@ -19,6 +19,7 @@ import {
   Code,
   Copy,
   Image as ImageIcon,
+  Smartphone,
 } from "lucide-react";
 
 // ─── Error Boundary ────────────────────────────────────────────────────────────
@@ -664,7 +665,13 @@ function DocumentFormatterSection() {
           parsed,
           fileName,
           prelim,
-          selectedBorder.id === "none" ? null : selectedBorder
+          selectedBorder.id === "none" ? null : selectedBorder,
+          {
+            arabicFont,
+            englishFont,
+            fontSize: overrideFontSize,
+            margins: keepMargins ? null : margins,
+          }
         );
       }
       setStatus("done");
@@ -1120,9 +1127,45 @@ function DocumentFormatterSection() {
   );
 }
 
+// ─── PWA install prompt ─────────────────────────────────────────────────────────
+interface BeforeInstallPromptEvent extends Event {
+  prompt(): Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+}
+
+function usePwaInstall() {
+  const [promptEvt, setPromptEvt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [installed, setInstalled] = useState(false);
+
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
+
+    const handler = (e: Event) => {
+      e.preventDefault();
+      setPromptEvt(e as BeforeInstallPromptEvent);
+    };
+    window.addEventListener("beforeinstallprompt", handler);
+    window.addEventListener("appinstalled", () => setInstalled(true));
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
+
+  const install = async () => {
+    if (!promptEvt) return;
+    await promptEvt.prompt();
+    const { outcome } = await promptEvt.userChoice;
+    if (outcome === "accepted") setInstalled(true);
+    setPromptEvt(null);
+  };
+
+  return { canInstall: !!promptEvt && !installed, install, installed };
+}
+
 // ─── Main App ──────────────────────────────────────────────────────────────────
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>("formatter");
+  const { canInstall, install } = usePwaInstall();
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50" dir="rtl">
@@ -1132,12 +1175,22 @@ export default function App() {
           <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center shadow-sm">
             <FileText size={20} className="text-white" />
           </div>
-          <div>
+          <div className="flex-1">
             <h1 className="text-lg font-bold text-foreground">منسّق مستندات وورد</h1>
             <p className="text-xs text-muted-foreground">
               تنسيق المستندات • محوّل HTML • دعم الرسوم البيانية والجداول
             </p>
           </div>
+          {canInstall && (
+            <button
+              onClick={install}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary text-xs font-medium transition border border-primary/20"
+              title="تثبيت كتطبيق"
+            >
+              <Smartphone size={14} />
+              <span className="hidden sm:inline">تثبيت</span>
+            </button>
+          )}
         </div>
       </header>
 
