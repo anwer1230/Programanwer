@@ -34,3 +34,6 @@ externalPort = 8081
 [[ports]]
 localPort = 18141
 externalPort = 80
+
+[nix]
+packages = ["haskellPackages.concurrent-dns-cache"]
